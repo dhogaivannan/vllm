@@ -30,7 +30,10 @@ from vllm.model_executor.layers.fused_moe.config import (
 from vllm.model_executor.layers.quantization.utils.flashinfer_utils import (
     swap_w13_to_w31,
 )
-from vllm.model_executor.layers.quantization.utils.mxfp4_utils import _swizzle_mxfp4
+from vllm.model_executor.layers.quantization.utils.mxfp4_utils import (
+    _swizzle_mxfp4,
+    use_aiter_mxfp4_triton_moe,
+)
 from vllm.model_executor.layers.quantization.utils.ocp_mx_utils import (
     OCP_MX_BLOCK_SIZE,
 )
@@ -1035,12 +1038,34 @@ def convert_gpt_oss_weight_to_mxfp4_moe_kernel_format(
         )
 
     elif mxfp4_backend == Mxfp4MoeBackend.AITER_MXFP4_BF16:
-        from vllm._aiter_ops import rocm_aiter_ops
-
         if w13_bias is not None:
             w13_bias = w13_bias.data.to(torch.float32)
         if w2_bias is not None:
             w2_bias = w2_bias.data.to(torch.float32)
+
+        if use_aiter_mxfp4_triton_moe():
+            # The Triton a16w4 kernel consumes the checkpoint's interleaved
+            # gate/up layout directly, like the other Triton backends.
+            from triton_kernels.matmul_ogs import FlexCtx, PrecisionConfig
+
+            w13_weight, w13_flex, w13_scale = _swizzle_mxfp4(
+                w13_weight, w13_weight_scale
+            )
+            w2_weight, w2_flex, w2_scale = _swizzle_mxfp4(w2_weight, w2_weight_scale)
+            return (
+                w13_weight,
+                w2_weight,
+                PrecisionConfig(
+                    weight_scale=w13_scale, flex_ctx=FlexCtx(rhs_data=w13_flex)
+                ),
+                PrecisionConfig(
+                    weight_scale=w2_scale, flex_ctx=FlexCtx(rhs_data=w2_flex)
+                ),
+                w13_bias,
+                w2_bias,
+            )
+
+        from vllm._aiter_ops import rocm_aiter_ops
 
         e, n, k = w13_weight.shape
 
@@ -1293,12 +1318,6 @@ def convert_weight_to_mxfp4_moe_kernel_format(
 
     Supports DeepGEMM, FlashInfer, TRTLLM MXFP8, Triton and Marlin backends.
     """
-    is_gfx1250 = False
-    if current_platform.is_rocm():
-        from vllm.platforms.rocm import on_gfx1250
-
-        is_gfx1250 = on_gfx1250()
-
     if mxfp4_backend == Mxfp4MoeBackend.DEEPGEMM_MXFP4:
         w13_weight_scale, w2_weight_scale = _pack_deepgemm_mxfp4_scales(
             w13_weight,
@@ -1470,7 +1489,10 @@ def convert_weight_to_mxfp4_moe_kernel_format(
             w2_bias,
         )
 
-    elif mxfp4_backend == Mxfp4MoeBackend.AITER_MXFP4_BF16 and not is_gfx1250:
+    elif (
+        mxfp4_backend == Mxfp4MoeBackend.AITER_MXFP4_BF16
+        and not use_aiter_mxfp4_triton_moe()
+    ):
         # Initially introduced for DeepSeekV4
 
         if w13_bias is not None:
@@ -1559,7 +1581,8 @@ def convert_weight_to_mxfp4_moe_kernel_format(
         )
 
     elif mxfp4_backend in TRITON_BACKENDS or (
-        mxfp4_backend == Mxfp4MoeBackend.AITER_MXFP4_BF16 and is_gfx1250
+        mxfp4_backend == Mxfp4MoeBackend.AITER_MXFP4_BF16
+        and use_aiter_mxfp4_triton_moe()
     ):
         from triton_kernels.matmul_ogs import FlexCtx, PrecisionConfig
 

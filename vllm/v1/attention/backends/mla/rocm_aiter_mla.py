@@ -870,6 +870,13 @@ class AiterMLAHelper:
         return max(num_heads, AiterMLAHelper._AITER_MIN_MLA_HEADS)
 
     @staticmethod
+    def _whole_head_repeats(num_heads: int) -> int | None:
+        """Repeat factor that expands ``num_heads`` to exactly 16, else None."""
+        min_heads = AiterMLAHelper._AITER_MIN_MLA_HEADS
+        repeats = min_heads // num_heads
+        return repeats if repeats * num_heads == min_heads else None
+
+    @staticmethod
     def get_mla_padded_q(num_heads: int, q: torch.Tensor) -> torch.Tensor:
         m = AiterMLAHelper._AITER_MIN_MLA_HEADS
         if num_heads >= m:
