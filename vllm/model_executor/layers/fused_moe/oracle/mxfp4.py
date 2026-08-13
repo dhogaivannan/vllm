@@ -1280,6 +1280,7 @@ def convert_weight_to_mxfp4_moe_kernel_format(
     w13_bias: torch.Tensor | None = None,
     w2_bias: torch.Tensor | None = None,
     _cache_permute_indices: dict[torch.Size, torch.Tensor] | None = None,
+    activation: MoEActivation | None = None,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -1479,12 +1480,40 @@ def convert_weight_to_mxfp4_moe_kernel_format(
 
         import os
 
-        from aiter.ops.shuffle import shuffle_scale as _shuf_s
-        from aiter.ops.shuffle import shuffle_weight as _shuf_w
-
         # TODO: Remove this once AITER is fixed
         # Necessary for AITER side from crashing
         os.environ["AITER_BF16_FP8_MOE_BOUND"] = "0"
+
+        if activation == MoEActivation.SITU:
+            from aiter.utility.fp4_utils import e8m0_shuffle
+
+            from vllm._aiter_ops import rocm_aiter_ops
+
+            fp4_dtype = torch.float4_e2m1fn_x2
+            e8m0_dtype = torch.float8_e8m0fnu
+            # a8w4 uses gate/up-interleaved flydsl kernels;
+            # default a16w4 keeps the separated layout.
+            guinterleave = rocm_aiter_ops.is_fused_moe_situv2_a8w4_enabled()
+            w13 = rocm_aiter_ops.shuffle_weight_a16w4(
+                w13_weight.data.view(fp4_dtype), 16, guinterleave
+            )
+            w2 = rocm_aiter_ops.shuffle_weight_a16w4(
+                w2_weight.data.view(fp4_dtype), 16, False
+            )
+            w13_scale_raw = w13_weight_scale.data.view(e8m0_dtype)
+            w2_scale_raw = w2_weight_scale.data.view(e8m0_dtype)
+            w13_scale = rocm_aiter_ops.shuffle_scale_a16w4(
+                w13_scale_raw.view(-1, w13_scale_raw.shape[-1]),
+                num_experts,
+                guinterleave,
+            )
+            w2_scale = e8m0_shuffle(w2_scale_raw.view(-1, w2_scale_raw.shape[-1]))
+            w13.is_shuffled = True
+            w2.is_shuffled = True
+            return (w13, w2, w13_scale, w2_scale, w13_bias, w2_bias)
+
+        from aiter.ops.shuffle import shuffle_scale as _shuf_s
+        from aiter.ops.shuffle import shuffle_weight as _shuf_w
 
         w13_weight = torch.nn.Parameter(
             _shuf_w(
