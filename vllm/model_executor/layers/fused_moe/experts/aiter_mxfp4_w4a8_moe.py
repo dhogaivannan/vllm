@@ -60,13 +60,23 @@ def _get_padding_mask() -> torch.Tensor | None:
     else:
         slot_mapping_dict = slot_mapping
 
-    if isinstance(slot_mapping_dict, dict):
-        slot_mapping_sample = next(iter(slot_mapping_dict.values()), None)
-
-    if isinstance(slot_mapping_sample, torch.Tensor):
-        return slot_mapping_sample < 0
-    else:
+    if not isinstance(slot_mapping_dict, dict):
         return None
+
+    # Hybrid models (e.g. KDA + MLA) carry one slot mapping per KV-cache
+    # group with different semantics. A token is padding only if every
+    # group marks it negative: real tokens are never masked even when a
+    # mamba-style group uses negative values for its own bookkeeping.
+    mask = None
+    for v in slot_mapping_dict.values():
+        if not isinstance(v, torch.Tensor):
+            continue
+        m = v < 0
+        if mask is None:
+            mask = m
+        elif m.shape == mask.shape:
+            mask = mask & m
+    return mask
 
 
 def patch_gating_output(
