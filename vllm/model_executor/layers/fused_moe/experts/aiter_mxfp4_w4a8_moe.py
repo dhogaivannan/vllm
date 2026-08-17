@@ -86,6 +86,13 @@ def patch_gating_output(
     gating_output: torch.Tensor, global_num_experts: int
 ) -> torch.Tensor:
     if global_num_experts != 128:
+        # Under cudagraph capture the slot-mapping buffers are capture-time
+        # dummies and are not stable across replays, so a captured mask
+        # corrupts real tokens on every replay. Skip masking inside graphs:
+        # padded tokens then route unmasked, which is harmless because their
+        # outputs are discarded.
+        if torch.cuda.is_current_stream_capturing():
+            return gating_output
         is_padding = _get_padding_mask()
 
         if is_padding is not None:
