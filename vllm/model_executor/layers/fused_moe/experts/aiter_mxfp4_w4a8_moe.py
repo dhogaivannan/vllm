@@ -85,6 +85,11 @@ def _get_padding_mask() -> torch.Tensor | None:
 def patch_gating_output(
     gating_output: torch.Tensor, global_num_experts: int
 ) -> torch.Tensor:
+    # Disabled: on hybrid-attention models the slot-mapping-derived padding
+    # mask is unreliable in value and shape, and its branches get traced as
+    # constants under torch.compile, corrupting cudagraph replays. Padded
+    # tokens' outputs are discarded downstream, so masking is unnecessary.
+    return gating_output
     if global_num_experts != 128:
         # Under cudagraph capture the slot-mapping buffers are capture-time
         # dummies and are not stable across replays, so a captured mask
