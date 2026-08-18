@@ -7,7 +7,15 @@ Cudagraph mode MUST be FULL_DECODE_ONLY: the piecewise-compiled prefill
 path corrupts output under pipeline parallelism (upstream bug, eager
 prefill avoids it), while full-graph decode capture is correct.
 
-    VLLM_ROCM_USE_AITER=1 VLLM_ROCM_USE_AITER_MOE=1     vllm serve moonshotai/Kimi-K3       --tensor-parallel-size 8 --pipeline-parallel-size 2       --distributed-executor-backend ray       --compilation-config "{\"cudagraph_mode\": \"FULL_DECODE_ONLY\"}"       --gpu-memory-utilization 0.97 --max-num-seqs 128       --served-model-name kimi-k3 --reasoning-parser kimi_k3       --tool-call-parser kimi_k3 --enable-auto-tool-choice       --trust-remote-code
+Prefix caching MUST be disabled: a second request sharing a long cached
+prefix wedges a worker (engine dies on RPC timeout). Reproduced with two
+needle prompts sharing a 7k-token prefix. Matches the prefix-caching
+gaps tracked upstream for K3. gpu-memory-utilization 0.92, not 0.97:
+FDO graph pools need the headroom or long prefills hit svm eviction
+storms.
+
+    VLLM_ROCM_USE_AITER=1 VLLM_ROCM_USE_AITER_MOE=1     vllm serve moonshotai/Kimi-K3       --tensor-parallel-size 8 --pipeline-parallel-size 2       --distributed-executor-backend ray       --compilation-config "{\"cudagraph_mode\": \"FULL_DECODE_ONLY\"}"       --no-enable-prefix-caching \
+      --gpu-memory-utilization 0.92 --max-num-seqs 128       --served-model-name kimi-k3 --reasoning-parser kimi_k3       --tool-call-parser kimi_k3 --enable-auto-tool-choice       --trust-remote-code
 
 Measured (MI300X, 16 GPUs): 36.4 tok/s single-stream,
 168.5 tok/s @ 8 concurrent, 498.3 tok/s @ 32 concurrent.
